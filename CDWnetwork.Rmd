@@ -1,0 +1,182 @@
+---
+title: "CDW DB Network Plots"
+description: |
+  Visualizing the VA Corporate Data Warehouse through 2d and 3d network diagrams
+date: "`r Sys.Date()`"
+author:
+  - name: "Richard Evans"
+    url: https://github.com/rrevansUM
+    affiliation: Center for Clinical Management Research, U.S. Dept. of Veterans Affairs
+    affiliation_url: https://www.annarbor.hsrd.research.va.gov/
+output: 
+  distill::distill_article:
+    toc: true
+---
+
+```{r setup, include = FALSE}
+library(knitr)
+
+options(max.print = "200")
+opts_chunk$set(echo    = TRUE,
+	             cache   = FALSE,
+               prompt  = FALSE,
+               tidy    = FALSE,
+               comment = NA,
+               message = FALSE,
+               warning = FALSE)
+opts_knit$set(width = 80)
+```
+
+# Introduction
+
+Network plots depicting relationships between Database tables and views in CDW, the corporate data warehouse. There are 2 sources of meta-data, that which I have created (CDW), and that which can be downloaded from `CDWWork.Meta.DWViewForeignKey`^[see SQL code in appendix], both are incomplete to some extent. I will work with just the one queried from CDW directly, as it's more complete.
+
+# Import Data
+
+Relationships (**edges**) and tables (**nodes**) imported from SQL DB
+
+<font size="4">Edges</font>
+
+```{r}
+library(readxl)
+library(tidyverse)
+library(magrittr)
+
+file <- "Data/CDW_Relationships.xlsx" # nodes and edges in separate sheets
+
+edges <- read_xlsx(file, sheet = "metaVINCI")
+```
+
+We're going to create nodes from the edges
+
+# Process Data for Network Setup
+
+```{r}
+nodes1 <- edges %>% distinct(Entity1) %>% rename(id = Entity1)
+nodes2 <- edges %>% distinct(Entity2) %>% rename(id = Entity2)
+nodes <- bind_rows(nodes1, nodes2)
+nodes$label <- nodes$id
+nodes$Domain <- sub("_.*", "", nodes$label)
+nodes <- nodes %>%
+  mutate(
+    Domain = case_when(
+      Domain == "ADR"          ~ "Active Directory",
+      Domain == "Appt"         ~ "Appointment",
+      Domain == "Chem"         ~ "LabChem",
+      Domain == "Con"          ~ "Consult",
+      Domain == "Fee"          ~ "Purchased Care",
+      Domain == "HF"           ~ "Health Factor",
+      Domain == "IB"           ~ "Integrated Billing",
+      Domain == "Immun"        ~ "Immunization",
+      Domain == "Inpat"        ~ "Inpatient",
+      Domain == "MH"           ~ "Mental Health",
+      Domain == "Micro"        ~ "Microbiology",
+      Domain == "NonVAMed"     ~ "Non-VA Medication",
+      Domain == "Outpat"       ~ "Outpatient",
+      Domain == "Patsub"       ~ "Patient",
+      Domain == "Rad"          ~ "Radiology",
+      Domain == "SPatientText" ~ "SPatient",
+      Domain == "StaffSub"     ~ "Staff",
+      Domain == "Surg"         ~ "Surg",
+      Domain == "Vital"        ~ "Vitals",
+      Domain == "WH"           ~ "Womens Health",
+      TRUE ~ Domain
+    ),
+    group = ifelse(Domain == "Dim" | Domain == "NDim", "Dim", "Fact")
+  ) %>% 
+  distinct()
+
+# Edges need renaming
+edges <- edges %>% rename(from = Entity1, to = Entity2)
+```
+
+
+# Network Visualization
+
+## 2-Dimensional
+
+```{r}
+library(visNetwork)
+
+test.edges <- edges %>% filter(Domain == "Dim")
+
+nodes.in.net <- data.frame(
+  id = c(unique(test.edges$from), unique(test.edges$to))
+)
+
+test.nodes <- nodes %>%
+  right_join(nodes.in.net, by = "id") %>%
+  select(-Domain) %>%
+  distinct()
+
+visNetwork(test.nodes, test.edges) %>%
+  visOptions(
+    highlightNearest = TRUE,
+    nodesIdSelection = TRUE
+  ) %>%
+  visInteraction(navigationButtons = TRUE)
+```
+
+
+# SQL Code {.appendix}
+
+```{r, echo = TRUE, eval = FALSE}
+
+/******************************* Relationships *******************************/
+
+USE ORD_Sears_201803016D
+GO
+
+SELECT COUNT(*) AS MetaDWViewForeignKey
+	FROM CDWWork.Meta.DWViewForeignKey
+-- 2686 relationships in total
+
+SELECT a.TABLE_NAME
+	INTO #SearsViews
+		FROM INFORMATION_SCHEMA.COLUMNS AS a
+			 JOIN INFORMATION_SCHEMA.TABLES AS t 
+				ON a.TABLE_NAME = t.TABLE_NAME
+				   AND 
+				   a.TABLE_SCHEMA = t.TABLE_SCHEMA
+		WHERE TABLE_TYPE = 'view'
+		GROUP BY a.TABLE_NAME
+-- nrow = 237, ncol = 1
+
+-- create temporary version of Meta.DWViewForeignKey, concatenating table names
+SELECT FKSchemaName    + '_' + FKViewName AS FKFullName,
+	     PKSchemaName    + '_' + PKViewName AS PKFullName,
+	     FKViewFieldName + ' = ' + PKViewFieldName AS Link
+	INTO #Relationships
+		FROM CDWWork.Meta.DWViewForeignKey
+-- nrow = 2686, ncol = 3
+
+-- left join to subset to Sears cohort views
+SELECT TABLE_NAME AS Entity1,
+       PKFullName AS Entity2,
+	     Link
+	 INTO gen.Relationships
+		  FROM #SearsViews AS a
+			    LEFT JOIN #Relationships AS b ON a.TABLE_NAME = b.FKFullName
+-- nrow = 1104, ncol = 3
+
+-- clean temp table workspace
+
+SELECT LEFT(name, charindex('_', name) - 1) AS TempTables
+	FROM tempdb..sysobjects
+	WHERE charindex('_', name) > 0 
+		  AND xtype = 'u' 
+		  AND NOT object_id('tempdb..' + name) IS NULL
+	ORDER BY TempTables
+
+DROP TABLE #Relationships, #SearsViews
+
+/****************************** End of Document ******************************/
+
+```
+
+# R-Session Info {.appendix}
+
+```{r, echo = FALSE, eval = TRUE}
+sessionInfo()
+```
+
